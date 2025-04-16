@@ -260,7 +260,7 @@ def get_curriculum_with_subject_from_duke_api(subject: str):
                 }
                 return json.dumps(limited_response)
             else:
-                return response.text
+                return response.text[:10000]
         except json.JSONDecodeError:
             return "Error: Could not parse API response"
     else:
