@@ -8,6 +8,8 @@ import os
 import json
 from dotenv import load_dotenv
 
+serpapi_api_key = os.getenv("SERPAPI_API_KEY")
+
 # Import your custom tools from tools.py
 from tools import (
     get_events_from_duke_api,
@@ -16,7 +18,9 @@ from tools import (
     get_people_information_from_duke_api,
     search_subject_by_code,
     search_group_format,
-    search_category_format
+    search_category_format,
+    get_pratt_info_from_serpapi,
+    get_specific_pratt_info
 )
 
 # Load environment variables from .env file
@@ -133,6 +137,18 @@ def create_duke_agent():
                 "Always use this tool first if you're uncertain about the exact category format."
             )
         ),
+        Tool(
+             name="PrattSearch",
+             func=lambda query: get_pratt_info_from_serpapi(
+                 query="Duke Pratt School of Engineering " + query,  # Force Duke Pratt in the query
+                 api_key=serpapi_api_key,
+                 filter_domain=True  # Ensure we filter for Duke domains
+             ),
+             description=(
+                 "Use this tool to search for information about Duke Pratt School of Engineering. "
+                 "Specify your search query."
+             )
+         ),
     ]
     
     # Create a memory instance
@@ -221,7 +237,7 @@ def main():
         # "please show me the events related to data science",
         # "please tell me about Brinnae Bent",
         # "tell me some professors who are working on AI",
-        "Introduce me Duke University",
+        # "Introduce me Duke University",
         "Tell me something about Pratt School of Engineering at Duke",
         "Tell me about the aipi program at Duke University",
     ]
