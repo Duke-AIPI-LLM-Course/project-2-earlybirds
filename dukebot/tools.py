@@ -20,9 +20,9 @@ def load_options_from_file(filename):
 
 # Try to load the valid options
 try:
-    valid_groups = load_options_from_file('../groups.txt')
-    valid_categories = load_options_from_file('../categories.txt')
-    valid_subjects = load_options_from_file('../subjects.txt')
+    valid_groups = load_options_from_file('groups.txt')
+    valid_categories = load_options_from_file('categories.txt')
+    valid_subjects = load_options_from_file('subjects.txt')
 except FileNotFoundError as e:
     print(f"Warning: Could not load options file: {e}")
     valid_groups = []
@@ -47,10 +47,10 @@ def load_valid_values(filename: str) -> list:
         return [line.strip() for line in f if line.strip()]
 
 def load_valid_groups():
-    return load_valid_values("../groups.txt")
+    return load_valid_values("groups.txt")
 
 def load_valid_categories():
-    return load_valid_values("../categories.txt")
+    return load_valid_values("categories.txt")
 
 def llm_map_prompt_to_filters(prompt: str):
     """
@@ -108,12 +108,12 @@ def llm_map_prompt_to_filters(prompt: str):
         answer = response['choices'][0]['message']['content']
         # Parse the response as JSON. If parsing fails, default to ['All'].
         data = json.loads(answer)
-        groups = data.get("groups", ["All"])
-        categories = data.get("categories", ["All"])
+        groups = data.get("groups", [])
+        categories = data.get("categories", [])
     except Exception as e:
         print(f"LLM mapping failed: {str(e)}")
-        groups = ["All"]
-        categories = ["All"]
+        groups = []
+        categories = []
 
     return groups, categories
 
@@ -221,6 +221,8 @@ def get_events_from_duke_api(prompt: str,
     """
     # Use the LLM-based mapping to get groups and categories
     groups, categories = llm_map_prompt_to_filters(prompt)
+    if not groups or not categories:
+            return "Error: Unable to find any related groups or categories for the given prompt."
     
     print(f"LLM mapped prompt '{prompt}' to groups {groups} and categories {categories}")
     

@@ -233,13 +233,12 @@ def main():
         # "Tell me about Computer Science classes",
         # "Are there any AI events at Duke?",
         # "What cs courses are available?",
-        # "Tell me about aipi program",
+        "Tell me about AI Meng program",
         # "please show me the events related to data science",
         # "please tell me about Brinnae Bent",
         # "tell me some professors who are working on AI",
         # "Introduce me Duke University",
-        "Tell me something about Pratt School of Engineering at Duke",
-        "Tell me about the aipi program at Duke University",
+        # "Tell me something about Pratt School of Engineering at Duke",
     ]
     
     for query in test_queries:
