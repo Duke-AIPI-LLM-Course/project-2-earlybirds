@@ -140,9 +140,9 @@ def create_duke_agent():
         Tool(
              name="PrattSearch",
              func=lambda query: get_pratt_info_from_serpapi(
-                 query="Duke Pratt School of Engineering " + query,  # Force Duke Pratt in the query
+                 query="Duke Pratt School of Engineering " + query, 
                  api_key=serpapi_api_key,
-                 filter_domain=True  # Ensure we filter for Duke domains
+                 filter_domain=True  
              ),
              description=(
                  "Use this tool to search for information about Duke Pratt School of Engineering. "

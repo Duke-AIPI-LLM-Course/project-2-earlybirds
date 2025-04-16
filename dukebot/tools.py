@@ -385,7 +385,6 @@ def get_pratt_info_from_serpapi(query="Duke Pratt School of Engineering", api_ke
      """
      Retrieve information about Duke's Pratt School of Engineering using SerpAPI.
      """
-     # Get API key from environment if not provided
      if api_key is None:
          api_key = os.environ.get("SERPAPI_API_KEY")
          if not api_key:
@@ -404,10 +403,8 @@ def get_pratt_info_from_serpapi(query="Duke Pratt School of Engineering", api_ke
          response = requests.get(url, timeout=15)
          response.raise_for_status()
          
-         # Parse the JSON response
          search_results = response.json()
          
-         # Process and filter the results
          processed_results = process_serpapi_results(search_results, filter_domain)
          
          return json.dumps(processed_results)
