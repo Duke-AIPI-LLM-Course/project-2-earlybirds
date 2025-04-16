@@ -4,8 +4,25 @@ from langchain.tools import Tool
 import requests
 import json
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
+
+# Load valid options from files
+def load_options_from_file(filename):
+    with open(filename, 'r') as file:
+        return [line.strip() for line in file]
+
+# Try to load the valid options
+try:
+    valid_groups = load_options_from_file('../groups.txt')
+    valid_categories = load_options_from_file('../categories.txt')
+    valid_subjects = load_options_from_file('../subjects.txt')
+except FileNotFoundError as e:
+    print(f"Warning: Could not load options file: {e}")
+    valid_groups = []
+    valid_categories = []
+    valid_subjects = []
 
 def get_events_from_duke_api(feed_type: str = "json",
                              future_days: int = 45,
@@ -87,34 +104,38 @@ def get_events_from_duke_api(feed_type: str = "json",
     
 
 def get_curriculum_with_subject_from_duke_api(subject: str):
-
     """
-
-    Retrieve curriculum information from Duke University's API by specifying a subject code, allowing you to access brief details about available courses.
-
-    Parameters:
-        subject (str): The subject to get curriculumn data for. For example, the subject is 'ARABIC-Arabic'.
-
-    Returns:
-        str: Raw curriculum data in JSON format or an error message. If valid result, the response will contain each course's course id and course offer number for further queries.
-        The value of course id is the value of 'crse_id' in the response, and the value of course offer number is the value of 'crse_offer_nbr' in the response.
+    Retrieve curriculum information from Duke University's API by specifying a subject code.
+    Returns information about available courses.
     """
-
     subject_url = quote(subject, safe="")
-
     url = f'https://streamer.oit.duke.edu/curriculum/courses/subject/{subject_url}?access_token=19d3636f71c152dd13840724a8a48074'
-
+    
     response = requests.get(url)
-
+    
     if response.status_code == 200:
-        return response.text
+        try:
+            # Parse the JSON response
+            data = json.loads(response.text)
+            
+            # Limit the number of courses returned (e.g., first 5)
+            if isinstance(data, list) and len(data) > 5:
+                limited_data = data[:5]
+                # Add a note about limiting the results
+                limited_response = {
+                    "courses": limited_data,
+                    "note": f"Showing 5 out of {len(data)} courses. Use more specific queries to refine results."
+                }
+                return json.dumps(limited_response)
+            else:
+                return response.text
+        except json.JSONDecodeError:
+            return "Error: Could not parse API response"
     else:
         return f"Failed to fetch data: {response.status_code}"
     
 def get_detailed_course_information_from_duke_api(course_id: str, course_offer_number: str):
-
     """
-    
     Retrieve curriculum information from Duke University's API by specifying a course ID and course offer number, allowing you to access detailed information about a specific course.
 
     Parameters:
@@ -123,7 +144,6 @@ def get_detailed_course_information_from_duke_api(course_id: str, course_offer_n
 
     Returns:
         str: Raw curriculum data in JSON format or an error message.
-
     """
 
     url = f'https://streamer.oit.duke.edu/curriculum/courses/crse_id/{course_id}/crse_offer_nbr/{course_offer_number}?access_token=19d3636f71c152dd13840724a8a48074'
@@ -135,9 +155,7 @@ def get_detailed_course_information_from_duke_api(course_id: str, course_offer_n
         return f"Failed to fetch data: {response.status_code}"
     
 def get_people_information_from_duke_api(name: str):
-
     """
-    
     Retrieve people information from Duke University's API by specifying a name, allowing you to access detailed information about a specific person.
 
     Parameters:
@@ -145,7 +163,6 @@ def get_people_information_from_duke_api(name: str):
 
     Returns:
         str: Raw people data in JSON format or an error message.
-
     """
 
     name_url = quote(name, safe="")
@@ -159,192 +176,95 @@ def get_people_information_from_duke_api(name: str):
     else:
         return f"Failed to fetch data: {response.status_code}"
 
-def get_pratt_info_from_serpapi(query="Duke Pratt School of Engineering", api_key=None, filter_domain=True):
+# New search functions for format compatibility
+def search_subject_by_code(query):
     """
-    Retrieve information about Duke's Pratt School of Engineering using SerpAPI.
+    Search for subjects matching a code or description.
+    
+    Parameters:
+        query (str): The search term to look for in subject codes or descriptions.
+        
+    Returns:
+        str: JSON string containing matching subjects.
     """
-    # Get API key from environment if not provided
-    if api_key is None:
-        api_key = os.environ.get("SERPAPI_API_KEY")
-        if not api_key:
-            return json.dumps({"error": "SerpAPI key not found. Please provide an API key or set SERPAPI_API_KEY environment variable."})
+    # Search by code (like "AIPI" or "CS")
+    code_matches = []
+    for subject in valid_subjects:
+        parts = subject.split(' - ')
+        if len(parts) >= 2:
+            code = parts[0].strip()
+            # Look for the query in the code part
+            if query.lower() in code.lower() or query.lower().replace(' ', '') in code.lower().replace('-', '').replace(' ', ''):
+                code_matches.append(subject)
     
-    # Ensure the query includes Duke Pratt
-    if "duke pratt" not in query.lower():
-        query = f"Duke Pratt School of Engineering {query}"
+    # Search by name/description (like "computer science" or "artificial intelligence")
+    name_matches = []
+    for subject in valid_subjects:
+        parts = subject.split(' - ')
+        if len(parts) >= 2:
+            name = parts[1].strip()
+            # Look for the query in the name part
+            if query.lower() in name.lower():
+                name_matches.append(subject)
     
-    # Construct the SerpAPI URL with the query
-    encoded_query = quote(query)
-    url = f"https://serpapi.com/search.json?q={encoded_query}&engine=google&num=10&api_key={api_key}"
+    # Combine results with code matches first (removing duplicates)
+    all_matches = code_matches + [m for m in name_matches if m not in code_matches]
     
-    try:
-        # Make the request to SerpAPI
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        
-        # Parse the JSON response
-        search_results = response.json()
-        
-        # Process and filter the results
-        processed_results = process_serpapi_results(search_results, filter_domain)
-        
-        return json.dumps(processed_results)
-        
-    except requests.exceptions.RequestException as e:
-        return json.dumps({"error": f"Failed to fetch data from SerpAPI: {str(e)}"})
-    except json.JSONDecodeError:
-        return json.dumps({"error": "Failed to parse SerpAPI response as JSON"})
+    return json.dumps({
+        "query": query,
+        "matches": all_matches[:5]  # Limit to top 5 matches
+    })
 
-def process_serpapi_results(search_results, filter_domain=True):
+def search_group_format(query):
     """
-    Process and filter SerpAPI results to extract the most relevant information.
-    """
-    processed_data = {
-        "search_metadata": {},
-        "organic_results": [],
-        "knowledge_graph": {},
-        "related_questions": []
-    }
+    Search for groups matching a query string.
     
-    # Extract search metadata
-    if "search_metadata" in search_results:
-        processed_data["search_metadata"] = {
-            "query": search_results["search_metadata"].get("query", ""),
-            "total_results": search_results.get("search_information", {}).get("total_results", 0)
-        }
-    
-    # Extract organic results
-    if "organic_results" in search_results:
-        organic_results = search_results["organic_results"]
+    Parameters:
+        query (str): The search term to look for in group names.
         
-        # Filter for duke.edu domains if requested
-        if filter_domain:
-            # More aggressive filtering - require "duke" in the link or snippet
-            filtered_results = [result for result in organic_results 
-                               if "duke" in result.get("link", "").lower() or 
-                                  "duke" in result.get("snippet", "").lower()]
-            
-            # Further prioritize pratt.duke.edu results
-            pratt_results = [result for result in filtered_results 
-                            if "pratt.duke.edu" in result.get("link", "")]
-            
-            other_duke_results = [result for result in filtered_results 
-                                 if "pratt.duke.edu" not in result.get("link", "")]
-            
-            # Combine with pratt results first, then other duke results
-            processed_results = pratt_results + other_duke_results
-            
-            # If we have no results after filtering, use the original results
-            if not processed_results and organic_results:
-                processed_results = organic_results[:5]  # Just take the top 5
-        else:
-            processed_results = organic_results
+    Returns:
+        str: JSON string containing matching groups.
+    """
+    matches = [g for g in valid_groups if query.lower() in g.lower()]
+    
+    return json.dumps({
+        "query": query,
+        "matches": matches[:5]  # Limit to top 5 matches
+    })
+
+def search_category_format(query):
+    """
+    Search for categories matching a query string.
+    
+    Parameters:
+        query (str): The search term to look for in category names.
         
-        # Extract the most useful information from each result
-        for result in processed_results[:8]:  # Limit to top 8 results
-            processed_data["organic_results"].append({
-                "title": result.get("title", ""),
-                "link": result.get("link", ""),
-                "snippet": result.get("snippet", ""),
-                "source": result.get("source", "")
-            })
-    
-    # Extract knowledge graph information if available
-    if "knowledge_graph" in search_results:
-        kg = search_results["knowledge_graph"]
-        processed_data["knowledge_graph"] = {
-            "title": kg.get("title", ""),
-            "type": kg.get("type", ""),
-            "description": kg.get("description", ""),
-            "website": kg.get("website", ""),
-            "address": kg.get("address", "")
-        }
-    
-    # Extract related questions if available
-    if "related_questions" in search_results:
-        for question in search_results["related_questions"][:4]:  # Limit to top 4 questions
-            processed_data["related_questions"].append({
-                "question": question.get("question", ""),
-                "answer": question.get("answer", "")
-            })
-    
-    return processed_data
-
-def get_specific_pratt_info(topic="general", subtopic=None, api_key="9339dbe03e129628964af59694c4709f334ee7bf84e7c0c1e335cbc9ea0bbaf6"):
+    Returns:
+        str: JSON string containing matching categories.
     """
-    Retrieve specific information about Duke's Pratt School of Engineering using SerpAPI.
-    """
-    # Map topics to specific search queries
-    topic_queries = {
-        "general": "Duke Pratt School of Engineering overview information",
-        "academics": "Duke Pratt School of Engineering academic programs degrees majors",
-        "admissions": "Duke Pratt School of Engineering admissions requirements application deadlines",
-        "ai_meng": "Duke Pratt AI for Product Innovation MEng program curriculum courses",
-        "student_life": "Duke Pratt School of Engineering student life experience campus",
-        "research": "Duke Pratt School of Engineering research areas labs projects",
-        "faculty": "Duke Pratt School of Engineering faculty professors researchers",
-        "events": "Duke Pratt School of Engineering events workshops seminars"
-    }
+    matches = [c for c in valid_categories if query.lower() in c.lower()]
     
-    # Map subtopics for more specific queries
-    subtopic_queries = {
-        "academics": {
-            "undergraduate": "Duke Pratt School of Engineering undergraduate programs BSE degrees majors",
-            "graduate": "Duke Pratt School of Engineering graduate programs masters PhD",
-            "courses": "Duke Pratt School of Engineering course offerings classes",
-            "requirements": "Duke Pratt School of Engineering degree requirements curriculum"
-        },
-        "admissions": {
-            "undergraduate": "Duke Pratt School of Engineering undergraduate admissions requirements deadlines",
-            "graduate": "Duke Pratt School of Engineering graduate admissions requirements deadlines",
-            "deadlines": "Duke Pratt School of Engineering application deadlines",
-            "requirements": "Duke Pratt School of Engineering application requirements"
-        },
-        "ai_meng": {
-            "curriculum": "Duke Pratt AI for Product Innovation MEng program curriculum courses",
-            "admissions": "Duke Pratt AI for Product Innovation MEng program admissions requirements",
-            "careers": "Duke Pratt AI for Product Innovation MEng program career outcomes jobs",
-            "faculty": "Duke Pratt AI for Product Innovation MEng program faculty instructors"
-        }
-    }
-    
-    # Check if the topic is valid
-    if topic not in topic_queries:
-        return json.dumps({
-            "error": f"Topic '{topic}' not found",
-            "available_topics": list(topic_queries.keys())
-        })
-    
-    # Construct the query based on topic and subtopic
-    if subtopic and topic in subtopic_queries and subtopic in subtopic_queries[topic]:
-        query = subtopic_queries[topic][subtopic]
-    else:
-        query = topic_queries[topic]
-    
-    # Call the SerpAPI search function
-    return get_pratt_info_from_serpapi(query, api_key)
+    return json.dumps({
+        "query": query,
+        "matches": matches[:5]  # Limit to top 5 matches
+    })
 
-# Wrap these functions into LangChain Tools
+# Create tools for LangChain
 tools = [
     Tool(
         name="get_duke_events",
         func=get_events_from_duke_api,
         description=(
             "Use this tool to retrieve upcoming events from Duke University's calendar via Duke's public API. "
-            "You can specify the format of the returned data (e.g., 'rss', 'js', 'ics', 'csv', 'json', 'jsonp') "
-            "and the number of days into the future to fetch events. You can also filter by groups and categories: "
-            "groups are the organizer or host groups of the events, while categories are the thematic or topical category of the events."
-            "set filter_method_group=True to require that an event match ALL specified groups (AND), or False to "
-            "match ANY of them (OR). Similarly, set filter_method_category=True for an AND filter on categories, "
-            "or False for an OR filter. Using ['All'] for either groups or categories fetches events without "
-            "filtering on that parameter. The function returns raw calendar data or an error message."
+            "IMPORTANT: 'groups' parameter values must be from groups.txt list. "
+            "IMPORTANT: 'categories' parameter values must be from categories.txt list. "
             "Parameters:"
             "   feed_type (str): Format of the returned data. Acceptable values include 'rss', 'js', 'ics', 'csv', 'json', 'jsonp'."
             "   future_days (int): Number of days into the future for which to fetch events. Defaults to 45."
             "   groups (list): List of groups to filter events by. Use ['All'] to include events from all groups."
             "   categories (list): List of categories to filter events by. Use ['All'] to include events from all categories."
-            "   filter_method_group (bool): True: Event must match ALL specified groups (AND). False: Event may match ANY of the specified groups (OR)."
-            "   filter_method_category (bool): True: Event must match ALL specified categories (AND). False: Event may match ANY of the specified categories (OR)."
+            "   filter_method_group (bool): True: Event may match ANY of the specified groups (OR). False: Event must match ALL specified groups (AND)."
+            "   filter_method_category (bool): True: Event may match ANY of the specified categories (OR). False: Event must match ALL specified categories (AND)."
         )
     ),
     Tool(
@@ -352,8 +272,7 @@ tools = [
         func=get_curriculum_with_subject_from_duke_api,
         description=(
             "Use this tool to retrieve curriculum information from Duke University's API."
-            "Retrieve curriculum information from Duke University's API by specifying a subject code, allowing you to access brief details about available courses."
-            "It returns a JSON object with brief details about available courses, including course IDs and offer numbers."
+            "IMPORTANT: The 'subject' parameter must be from subjects.txt list. "
             "Parameters:"
             "   subject (str): The subject to get curriculum data for. For example, the subject is 'ARABIC-Arabic'."
             "Return:"
@@ -365,9 +284,7 @@ tools = [
         func=get_detailed_course_information_from_duke_api,
         description=(
             "Use this tool to retrieve detailed curriculum information from Duke University's API."
-            "Retrieve curriculum information from Duke University's API by specifying a course ID and course offer number, allowing you to access detailed information about a specific course."
-            "The course ID and course offer number can be obtained from the previous tool."
-            "It returns a JSON object with detailed information about the course."
+            "The course ID and course offer number can be obtained from get_curriculum_with_subject_from_duke_api."
             "Parameters:"
             "   course_id (str): The course ID to get curriculum data for. For example, the course ID is 029248' for General African American Studies."
             "   course_offer_number (str): The course offer number to get curriculum data for. For example, the course offer number is '1' for General African American Studies."
@@ -380,8 +297,6 @@ tools = [
         func=get_people_information_from_duke_api,
         description=(
             "Use this tool to retrieve people information from Duke University's API."
-            "Retrieve people information from Duke University's API by specifying a name, allowing you to access detailed information about a specific person."
-            "It returns a JSON object with detailed information about the person."
             "Parameters:"
             "   name (str): The name to get people data for. For example, the name is 'Brinnae Bent'."
             "Return:"
@@ -389,17 +304,33 @@ tools = [
         )
     ),
     Tool(
-        name="get_pratt_info_serpapi",
-        func=get_specific_pratt_info,
+        name="search_subject_by_code",
+        func=search_subject_by_code,
         description=(
-            "Use this tool to retrieve information about Duke University's Pratt School of Engineering using SerpAPI. "
-            "You can specify a topic (general, academics, admissions, ai_meng, student_life, research, faculty, events) "
-            "and optionally a subtopic for more specific information. "
-            "Parameters: "
-            "  topic (str): The specific topic to search for information about. "
-            "  subtopic (str, optional): A more specific aspect of the topic to focus on. "
-            "  api_key (str): Your SerpAPI API key. "
-            "The tool returns JSON-formatted search results from SerpAPI about the specified Pratt topic."
+            "Use this tool to find the correct format of a subject before using get_curriculum_with_subject_from_duke_api. "
+            "This tool handles case-insensitive matching and partial matches. "
+            "Example: 'cs' might return 'COMPSCI - Computer Science'. "
+            "Always use this tool first if you're uncertain about the exact subject format."
         )
-    )
+    ),
+    Tool(
+        name="search_group_format",
+        func=search_group_format,
+        description=(
+            "Use this tool to find the correct format of a group before using get_events_from_duke_api. "
+            "This tool handles case-insensitive matching and partial matches. "
+            "Example: 'data science' might return '+DataScience (+DS)'. "
+            "Always use this tool first if you're uncertain about the exact group format."
+        )
+    ),
+    Tool(
+        name="search_category_format",
+        func=search_category_format,
+        description=(
+            "Use this tool to find the correct format of a category before using get_events_from_duke_api. "
+            "This tool handles case-insensitive matching and partial matches. "
+            "Example: 'ai' might return 'Artificial Intelligence'. "
+            "Always use this tool first if you're uncertain about the exact category format."
+        )
+    ),
 ]
