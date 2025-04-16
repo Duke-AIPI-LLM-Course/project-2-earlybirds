@@ -5,8 +5,13 @@ import requests
 import json
 from dotenv import load_dotenv
 import os
+from rapidfuzz import fuzz
+from openai import OpenAI
 
 load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+model_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Load valid options from files
 def load_options_from_file(filename):
@@ -24,7 +29,95 @@ except FileNotFoundError as e:
     valid_categories = []
     valid_subjects = []
 
-def get_events_from_duke_api(feed_type: str = "json",
+def filter_candidates(query: str, candidates: list, top_n: int = 10) -> list:
+    """
+    Use fuzzy string matching to choose the top_n candidate strings from candidates
+    that best match the query.
+    """
+    # Compute a similarity score for each candidate
+    scored = [(candidate, fuzz.token_set_ratio(query, candidate)) for candidate in candidates]
+    # Sort candidates by score descending
+    scored.sort(key=lambda x: x[1], reverse=True)
+    # Return the top_n candidates; if no candidates are good matches, return an empty list.
+    return [candidate for candidate, score in scored[:top_n]]
+
+def load_valid_values(filename: str) -> list:
+    with open(filename, "r", encoding="utf8") as f:
+        # Remove empty lines and strip whitespace
+        return [line.strip() for line in f if line.strip()]
+
+def load_valid_groups():
+    return load_valid_values("../groups.txt")
+
+def load_valid_categories():
+    return load_valid_values("../categories.txt")
+
+def llm_map_prompt_to_filters(prompt: str):
+    """
+    Uses an LLM to map a natural language prompt to valid groups and categories.
+    The LLM receives reduced candidate lists (using fuzzy matching) from the full .txt files 
+    and is instructed to return a JSON object with the chosen groups and categories.
+    
+    Expected JSON output format:
+       {"groups": ["Group1", "Group2"], "categories": ["Category1", "Category2"]}
+    If no match is found for one field, return ["All"] for that field.
+    """
+    # Load full lists from files
+    valid_groups = load_valid_groups()
+    valid_categories = load_valid_categories()
+
+    # Pre-filter the lists using fuzzy matching to reduce tokens
+    filtered_groups = filter_candidates(prompt, valid_groups, top_n=10)
+    filtered_categories = filter_candidates(prompt, valid_categories, top_n=10)
+    
+    print("Filtered groups:", filtered_groups)
+    print("Filtered categories:", filtered_categories)
+    # If filtering returns an empty list, default to ["All"]
+    if not filtered_groups:
+        filtered_groups = ["All"]
+    if not filtered_categories:
+        filtered_categories = ["All"]
+
+    # Compose the system prompt as before
+    system_prompt = (
+        "You are an expert at mapping natural language input to valid filter values. "
+        "I will provide you a list of valid groups and valid categories along with a user query. "
+        "You must choose only values from the provided lists. If none of the items match, "
+        "return ['All'] for that field. Return only valid JSON with keys 'groups' and 'categories'."
+    )
+    
+    # Compose the user prompt with only the reduced lists
+    user_prompt = (
+        f"Valid groups: {json.dumps(filtered_groups)}\n"
+        f"Valid categories: {json.dumps(filtered_categories)}\n"
+        f"User query: \"{prompt}\"\n\n"
+        "Based on the user query, please select the most relevant groups and categories from the lists above. "
+        "Return a JSON object with the keys 'groups' and 'categories'."
+    )
+
+    try:
+        response = model_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0  # Low temperature to keep the output deterministic
+        )
+        response = response.model_dump()
+        answer = response['choices'][0]['message']['content']
+        # Parse the response as JSON. If parsing fails, default to ['All'].
+        data = json.loads(answer)
+        groups = data.get("groups", ["All"])
+        categories = data.get("categories", ["All"])
+    except Exception as e:
+        print(f"LLM mapping failed: {str(e)}")
+        groups = ["All"]
+        categories = ["All"]
+
+    return groups, categories
+
+def events_from_duke_api(feed_type: str = "json",
                              future_days: int = 45,
                              groups: list = ['All'],
                              categories: list = ['All'],
@@ -98,9 +191,48 @@ def get_events_from_duke_api(feed_type: str = "json",
     response = requests.get(url)
 
     if response.status_code == 200:
-        return response.text
+        return response.text[:10000]
     else:
         return f"Failed to fetch data: {response.status_code}"
+    
+def get_events_from_duke_api(prompt: str,
+                                   feed_type: str = "json",
+                                   future_days: int = 45,
+                                   filter_method_group: bool = True,
+                                   filter_method_category: bool = True) -> str:
+    """
+    Retrieve events from Duke University's public calendar API based on a natural language prompt.
+
+    prompt (str): Natural language prompt describing the query for events.
+
+    feed_type (str): Format of the returned data. Acceptable values include:
+                         'rss', 'js', 'ics', 'csv', 'json', 'jsonp'. Defaults to 'json'.
+
+    future_days (int): Number of days into the future for which to fetch events.
+                           Defaults to 45.
+
+    filter_method_group (bool): 
+    - False: Event must match ALL specified groups (AND).
+    - True: Event may match ANY of the specified groups (OR).
+
+    filter_method_category (bool): 
+    - False: Event must match ALL specified categories (AND).
+    - True: Event may match ANY of the specified categories (OR).
+    """
+    # Use the LLM-based mapping to get groups and categories
+    groups, categories = llm_map_prompt_to_filters(prompt)
+    
+    print(f"LLM mapped prompt '{prompt}' to groups {groups} and categories {categories}")
+    
+    # Call the original Duke API tool with the determined filters
+    return events_from_duke_api(
+        feed_type=feed_type,
+        future_days=future_days,
+        groups=groups,
+        categories=categories,
+        filter_method_group=filter_method_group,
+        filter_method_category=filter_method_category
+    )
     
 
 def get_curriculum_with_subject_from_duke_api(subject: str):
@@ -250,87 +382,87 @@ def search_category_format(query):
     })
 
 # Create tools for LangChain
-tools = [
-    Tool(
-        name="get_duke_events",
-        func=get_events_from_duke_api,
-        description=(
-            "Use this tool to retrieve upcoming events from Duke University's calendar via Duke's public API. "
-            "IMPORTANT: 'groups' parameter values must be from groups.txt list. "
-            "IMPORTANT: 'categories' parameter values must be from categories.txt list. "
-            "Parameters:"
-            "   feed_type (str): Format of the returned data. Acceptable values include 'rss', 'js', 'ics', 'csv', 'json', 'jsonp'."
-            "   future_days (int): Number of days into the future for which to fetch events. Defaults to 45."
-            "   groups (list): List of groups to filter events by. Use ['All'] to include events from all groups."
-            "   categories (list): List of categories to filter events by. Use ['All'] to include events from all categories."
-            "   filter_method_group (bool): True: Event may match ANY of the specified groups (OR). False: Event must match ALL specified groups (AND)."
-            "   filter_method_category (bool): True: Event may match ANY of the specified categories (OR). False: Event must match ALL specified categories (AND)."
-        )
-    ),
-    Tool(
-        name="get_curriculum_with_subject_from_duke_api",
-        func=get_curriculum_with_subject_from_duke_api,
-        description=(
-            "Use this tool to retrieve curriculum information from Duke University's API."
-            "IMPORTANT: The 'subject' parameter must be from subjects.txt list. "
-            "Parameters:"
-            "   subject (str): The subject to get curriculum data for. For example, the subject is 'ARABIC-Arabic'."
-            "Return:"
-            "   str: Raw curriculum data in JSON format or an error message. If valid result, the response will contain each course's course id and course offer number for further queries."
-        )
-    ),
-    Tool(
-        name="get_detailed_course_information_from_duke_api",
-        func=get_detailed_course_information_from_duke_api,
-        description=(
-            "Use this tool to retrieve detailed curriculum information from Duke University's API."
-            "The course ID and course offer number can be obtained from get_curriculum_with_subject_from_duke_api."
-            "Parameters:"
-            "   course_id (str): The course ID to get curriculum data for. For example, the course ID is 029248' for General African American Studies."
-            "   course_offer_number (str): The course offer number to get curriculum data for. For example, the course offer number is '1' for General African American Studies."
-            "Return:"
-            "   str: Raw curriculum data in JSON format or an error message."
-        )
-    ),
-    Tool(
-        name="get_people_information_from_duke_api",
-        func=get_people_information_from_duke_api,
-        description=(
-            "Use this tool to retrieve people information from Duke University's API."
-            "Parameters:"
-            "   name (str): The name to get people data for. For example, the name is 'Brinnae Bent'."
-            "Return:"
-            "   str: Raw people data in JSON format or an error message."
-        )
-    ),
-    Tool(
-        name="search_subject_by_code",
-        func=search_subject_by_code,
-        description=(
-            "Use this tool to find the correct format of a subject before using get_curriculum_with_subject_from_duke_api. "
-            "This tool handles case-insensitive matching and partial matches. "
-            "Example: 'cs' might return 'COMPSCI - Computer Science'. "
-            "Always use this tool first if you're uncertain about the exact subject format."
-        )
-    ),
-    Tool(
-        name="search_group_format",
-        func=search_group_format,
-        description=(
-            "Use this tool to find the correct format of a group before using get_events_from_duke_api. "
-            "This tool handles case-insensitive matching and partial matches. "
-            "Example: 'data science' might return '+DataScience (+DS)'. "
-            "Always use this tool first if you're uncertain about the exact group format."
-        )
-    ),
-    Tool(
-        name="search_category_format",
-        func=search_category_format,
-        description=(
-            "Use this tool to find the correct format of a category before using get_events_from_duke_api. "
-            "This tool handles case-insensitive matching and partial matches. "
-            "Example: 'ai' might return 'Artificial Intelligence'. "
-            "Always use this tool first if you're uncertain about the exact category format."
-        )
-    ),
-]
+# tools = [
+#     Tool(
+#         name="get_duke_events",
+#         func=get_events_from_duke_api,
+#         description=(
+#             "Use this tool to retrieve upcoming events from Duke University's calendar via Duke's public API. "
+#             "IMPORTANT: 'groups' parameter values must be from groups.txt list. "
+#             "IMPORTANT: 'categories' parameter values must be from categories.txt list. "
+#             "Parameters:"
+#             "   feed_type (str): Format of the returned data. Acceptable values include 'rss', 'js', 'ics', 'csv', 'json', 'jsonp'."
+#             "   future_days (int): Number of days into the future for which to fetch events. Defaults to 45."
+#             "   groups (list): List of groups to filter events by. Use ['All'] to include events from all groups."
+#             "   categories (list): List of categories to filter events by. Use ['All'] to include events from all categories."
+#             "   filter_method_group (bool): True: Event may match ANY of the specified groups (OR). False: Event must match ALL specified groups (AND)."
+#             "   filter_method_category (bool): True: Event may match ANY of the specified categories (OR). False: Event must match ALL specified categories (AND)."
+#         )
+#     ),
+#     Tool(
+#         name="get_curriculum_with_subject_from_duke_api",
+#         func=get_curriculum_with_subject_from_duke_api,
+#         description=(
+#             "Use this tool to retrieve curriculum information from Duke University's API."
+#             "IMPORTANT: The 'subject' parameter must be from subjects.txt list. "
+#             "Parameters:"
+#             "   subject (str): The subject to get curriculum data for. For example, the subject is 'ARABIC-Arabic'."
+#             "Return:"
+#             "   str: Raw curriculum data in JSON format or an error message. If valid result, the response will contain each course's course id and course offer number for further queries."
+#         )
+#     ),
+#     Tool(
+#         name="get_detailed_course_information_from_duke_api",
+#         func=get_detailed_course_information_from_duke_api,
+#         description=(
+#             "Use this tool to retrieve detailed curriculum information from Duke University's API."
+#             "The course ID and course offer number can be obtained from get_curriculum_with_subject_from_duke_api."
+#             "Parameters:"
+#             "   course_id (str): The course ID to get curriculum data for. For example, the course ID is 029248' for General African American Studies."
+#             "   course_offer_number (str): The course offer number to get curriculum data for. For example, the course offer number is '1' for General African American Studies."
+#             "Return:"
+#             "   str: Raw curriculum data in JSON format or an error message."
+#         )
+#     ),
+#     Tool(
+#         name="get_people_information_from_duke_api",
+#         func=get_people_information_from_duke_api,
+#         description=(
+#             "Use this tool to retrieve people information from Duke University's API."
+#             "Parameters:"
+#             "   name (str): The name to get people data for. For example, the name is 'Brinnae Bent'."
+#             "Return:"
+#             "   str: Raw people data in JSON format or an error message."
+#         )
+#     ),
+#     Tool(
+#         name="search_subject_by_code",
+#         func=search_subject_by_code,
+#         description=(
+#             "Use this tool to find the correct format of a subject before using get_curriculum_with_subject_from_duke_api. "
+#             "This tool handles case-insensitive matching and partial matches. "
+#             "Example: 'cs' might return 'COMPSCI - Computer Science'. "
+#             "Always use this tool first if you're uncertain about the exact subject format."
+#         )
+#     ),
+#     Tool(
+#         name="search_group_format",
+#         func=search_group_format,
+#         description=(
+#             "Use this tool to find the correct format of a group before using get_events_from_duke_api. "
+#             "This tool handles case-insensitive matching and partial matches. "
+#             "Example: 'data science' might return '+DataScience (+DS)'. "
+#             "Always use this tool first if you're uncertain about the exact group format."
+#         )
+#     ),
+#     Tool(
+#         name="search_category_format",
+#         func=search_category_format,
+#         description=(
+#             "Use this tool to find the correct format of a category before using get_events_from_duke_api. "
+#             "This tool handles case-insensitive matching and partial matches. "
+#             "Example: 'ai' might return 'Artificial Intelligence'. "
+#             "Always use this tool first if you're uncertain about the exact category format."
+#         )
+#     ),
+# ]
